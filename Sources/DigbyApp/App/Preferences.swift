@@ -64,13 +64,33 @@ struct Preferences: Codable {
     var totalSavedBytes: Int64 = 0
     /// With several versions of a video, put them in a "<name> versions" folder.
     var versionsInOwnFolder = false
+    /// How hard the settings panel works on its size estimates (none of it ever blocks the UI).
+    var estimateAccuracy: EstimateAccuracy = .quick
+
+    enum EstimateAccuracy: String, Codable, CaseIterable, Identifiable {
+        /// Instant figure from the video's content, refined by one light test encode in the background.
+        case quick
+        /// A light test encode at exactly the chosen settings, redone when they change.
+        case accurate
+        /// The same search the compression runs (it's then reused, so compressing starts faster).
+        case exact
+        var id: String { rawValue }
+        var label: String { switch self { case .quick: return "Quick"; case .accurate: return "Accurate"; case .exact: return "Exact" } }
+        var help: String {
+            switch self {
+            case .quick: return "Instant estimate, refined by a short test encode in the background."
+            case .accurate: return "A short test encode at exactly these settings, each time they change (a few seconds to a minute)."
+            case .exact: return "Runs the same search as the compression (can take minutes); compressing afterwards skips it."
+            }
+        }
+    }
 
     var allPresets: [Preset] { Preset.builtIns + presets }
 
     private static let key = "DigbyPreferences.v1"
 
     init() {}
-    enum CodingKeys: String, CodingKey { case settings, outputMode, outputFolder, notifyWhenDone, showAdvanced, presets, selectedPresetID, totalSavedBytes, versionsInOwnFolder }
+    enum CodingKeys: String, CodingKey { case settings, outputMode, outputFolder, notifyWhenDone, showAdvanced, presets, selectedPresetID, totalSavedBytes, versionsInOwnFolder, estimateAccuracy }
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         settings = (try? c.decode(CompressionSettings.self, forKey: .settings)) ?? CompressionSettings()
@@ -82,6 +102,7 @@ struct Preferences: Codable {
         selectedPresetID = try? c.decode(UUID.self, forKey: .selectedPresetID)
         totalSavedBytes = (try? c.decode(Int64.self, forKey: .totalSavedBytes)) ?? 0
         versionsInOwnFolder = (try? c.decode(Bool.self, forKey: .versionsInOwnFolder)) ?? false
+        estimateAccuracy = (try? c.decode(EstimateAccuracy.self, forKey: .estimateAccuracy)) ?? .quick
     }
 
     static func load() -> Preferences {

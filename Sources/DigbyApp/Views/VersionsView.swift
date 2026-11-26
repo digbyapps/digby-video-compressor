@@ -56,7 +56,7 @@ struct VersionsStrip: View {
         if pending > 0 {
             var p = "\(pending) to make"
             if let t = item.pendingTotals(engine: model.engine) { p += " · about \(Fmt.bytes(t.bytes)) · about \(Fmt.eta(t.seconds))" }
-            else if case .running = item.estimate { p += " · measuring…" }
+            if item.estimateRefining { p += " · refining…" }
             parts.append(p)
         }
         if !made.isEmpty { parts.append("\(made.count) made · \(Fmt.bytes(made.reduce(0) { $0 + $1.outputBytes })) in total") }
@@ -131,7 +131,7 @@ struct VersionCard: View {
         case .running(let p):
             VStack(alignment: .leading, spacing: 3) {
                 ProgressView(value: p.fraction).tint(Brand.accent).controlSize(.small)
-                Text("\(Int(p.fraction * 100))% · \(p.stage.rawValue)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                Text("\(Int(p.fraction * 100))% · \(p.stageTitle)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
         case .done(let r):
             Label("\(Fmt.bytes(r.outputBytes)) · −\(Int((r.reduction * 100).rounded()))%", systemImage: "checkmark.circle.fill")

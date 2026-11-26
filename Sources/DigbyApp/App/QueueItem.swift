@@ -63,6 +63,11 @@ final class QueueItem: Identifiable {
     /// Measured anchor for the size estimates in the settings panel.
     var estimate: EstimateState = .none
     @ObservationIgnored var estimateTask: Task<Void, Never>?
+    /// A background test encode is refining the estimate (the shown figure stays usable meanwhile).
+    var estimateRefining = false
+    var hasMeasuredEstimate: Bool { if case .ready = estimate { return true }; return false }
+    /// Settings the running refinement is for.
+    @ObservationIgnored var estimateFor: CompressionSettings?
     /// Sent by Digby Video Downloader: start as soon as it's inspected.
     @ObservationIgnored var autoStart = false
     /// Sent by Digby Video Downloader: replace this original (to the Trash) whatever the output setting.
@@ -81,6 +86,8 @@ final class QueueItem: Identifiable {
         var settings: CompressionSettings
         var plan: EncodePlan
         var evaluation: StudioEvaluation
+        /// Came from the full search (Exact), not the light one.
+        var exact = false
     }
 
     init(url: URL, settings: CompressionSettings) {

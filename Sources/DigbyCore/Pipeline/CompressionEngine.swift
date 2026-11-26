@@ -212,7 +212,7 @@ public final class CompressionEngine: Sendable {
                 let g = enc == plan.encoder ? guess : EngineTuning.initialQuality(enc, levelFor(target), kind: p.profile, synthetic: p.synthetic)
                 let proxy = EngineTuning.searchProxy(p, encoder: enc)
                 var o = try await optimiser.searchQuality(encoder: enc, params: proxy, sample: samples, targetVMAF: target, initial: g,
-                                                          maxKbps: sizeCap, maxProbes: light ? 3 : 5, progressBase: Double(i) / Double(candidates.count),
+                                                          maxKbps: sizeCap, maxProbes: light ? 3 : 4, progressBase: Double(i) / Double(candidates.count),
                                                           progressSpan: 1 / Double(candidates.count))
                 if proxy != p && !light {
                     tracker.update(.optimising, Double(i + 1) / Double(candidates.count) * 0.95, detail: "Confirming the setting with the final encoder preset")
@@ -521,19 +521,26 @@ public final class CompressionEngine: Sendable {
             throw DigbyError.insufficientDiskSpace(needed: expected + 200_000_000, available: avail)
         }
 
-        // Stage weights in "seconds of final-encode work".
+        // Stage weights: estimated wall-clock seconds of each stage (see `StageCost`).
         let D = media.duration
         let searching: Bool = {
             if case .fixedQuality = plan.rate { return false }
             if case .targetSize = plan.rate { return plan.depth != .quick }
             return !(plan.encoder.isHardware && plan.depth == .smart)
         }()
-        let candidates = Double(plan.depth == .bestPossible ? 2 : 1)
-        let optimiseCost = searching ? min(D * 1.5, 12 * 2 * candidates) : 0
+        let hardwareCorrects: Bool = { if case .searchQuality = plan.rate { return plan.encoder.isHardware && plan.depth == .smart }; return false }()
         let twoPass: Bool = { if case .targetSize = plan.rate { return EncoderRegistry.encoder(plan.encoder).supportsTwoPass }; return false }()
-        tracker.configure([(.sampling, searching ? min(D, 20) * 0.3 : 0), (.optimising, optimiseCost), (.encodingAudio, plan.streams.audio.allSatisfy { $0.codec == .none || $0.codec == .copy } ? 0 : D * (settings.edits.normalizeLoudness ? 0.03 : 0.01) * Double(plan.streams.audio.count)),
-                           (.firstPass, twoPass ? D * 0.3 : 0), (.encoding, D), (.measuring, settings.measureQuality && caps.hasVMAF ? D * 0.2 : 0),
-                           (.finishing, D * 0.01)])
+        let cost = StageCost(plan: plan, duration: D, synthetic: item.analysis.isSynthetic || item.analysis.kind == .screenRecording)
+        let measures = (settings.measureQuality || hardwareCorrects) && caps.hasVMAF
+        let audioWork = plan.streams.audio.allSatisfy { $0.codec == .none || $0.codec == .copy } ? 0
+            : D * (settings.edits.normalizeLoudness ? 0.03 : 0.01) * Double(plan.streams.audio.count)
+        tracker.configure([(.sampling, searching ? cost.sampling : 0),
+                           (.optimising, searching ? cost.search(candidates: plan.depth == .bestPossible ? 2 : 1, textGuard: plan.textGuard.active ? plan.textGuard.moments.count : 0) : 0),
+                           (.encodingAudio, audioWork),
+                           (.firstPass, twoPass ? cost.encode * 0.3 : 0), (.encoding, cost.encode),
+                           (.measuring, measures ? cost.measure * (hardwareCorrects ? 1.3 : 1) : 0),
+                           (.checkingText, plan.textGuard.moments.isEmpty ? 0 : cost.textCheck(moments: plan.textGuard.moments.count)),
+                           (.finishing, 0.5)])
 
         do {
             var d = try await cachedDecision(item, plan: plan, settings: settings, workspace: workspace, tracker: tracker)
@@ -650,7 +657,7 @@ public final class CompressionEngine: Sendable {
                     let ratio = (Double(target) * 0.985 - nonVideo) / max(1, Double(actual) - nonVideo)
                     let kbps = max(8, Int(Double(prevKbps) * ratio))
                     Log.warning("output \(actual) B > target \(target) B; re-encoding at \(kbps) kbps (attempt \(attempt))")
-                    tracker.addStage(.adjusting, weight: D, after: .encoding)
+                    tracker.addStage(.adjusting, weight: cost.encode, after: .encoding)
                     tracker.update(.adjusting, 0, detail: "Slightly over target — tightening")
                     if enc.supportsTwoPass && !didFirstPass {
                         // came from a constant-quality encode: needs a first pass now
@@ -689,7 +696,7 @@ public final class CompressionEngine: Sendable {
             func measure(_ detail: String) async -> QualityReport? {
                 tracker.update(.measuring, 0, detail: detail)
                 let frames = D * d.params.frameRate
-                let sub = max(1, Int((frames / 900).rounded(.up)))       // ≤ ~900 scored frames, spread over the whole video
+                let sub = max(1, Int((frames / Double(StageCost.scoredFrames)).rounded(.up)))   // spread over the whole video
                 do {
                     return try await QualityMeter(tools: tools).measure(
                         reference: media.url, referenceInput: QualityMeter.decodeArgs(media.video.codec) + media.inputArgs(),
@@ -707,7 +714,7 @@ public final class CompressionEngine: Sendable {
                     let step = (target + 0.25 - r.vmaf) / EngineTuning.vmafPerUnit(d.encoder)
                     let q2 = scale.clamp(scale.lowerIsBetter ? q - step : q + step)
                     if q2 != q {
-                        tracker.addStage(.adjusting, weight: D * 0.3, after: .measuring)
+                        tracker.addStage(.adjusting, weight: cost.encode + cost.measure, after: .measuring)
                         tracker.update(.adjusting, 0, detail: r.vmaf < target ? "Quality a little low — re-encoding one step better" : "Better than needed — re-encoding smaller")
                         let previous = workspace.file("first-try.\(container.fileExtension)")
                         try? FileManager.default.moveItem(at: partial, to: previous)
@@ -726,10 +733,11 @@ public final class CompressionEngine: Sendable {
             // ---- text legibility of the finished file
             var textReport: TextLegibilityReport? = nil
             if !plan.textGuard.moments.isEmpty {
-                tracker.update(.measuring, 1, detail: "Checking that on-screen text is readable")
+                tracker.update(.checkingText, 0, detail: "Reading on-screen text in the result")
                 if d.textCeiling == nil, case let limit = EngineTuning.practicalQualityLimit(d.encoder) {
                     d.textCeiling = try? await textClipCheck(item, decision: d, value: limit, plan: plan, reference: true)
                 }
+                tracker.update(.checkingText, 0.4, detail: "Comparing text with the original")
                 textReport = try? await TextLegibilityChecker(tools: tools).check(
                     source: media.url, sourceFilters: d.filters, encoded: partial, size: d.outputSize, fps: d.params.frameRate,
                     moments: plan.textGuard.moments.map(media.sourceTime),

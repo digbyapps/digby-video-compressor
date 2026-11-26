@@ -305,5 +305,31 @@ do {
           "only orphaned copies of the app's own encoder are stopped")
 } catch { check(false, "resume tests threw \(error)") }
 
+// MARK: speed and estimates
+do {
+    var hw = CompressionSettings(); hw.priority = .fastest
+    let hp = try plan(hw)
+    let cost = StageCost(plan: hp, duration: 12, synthetic: false)
+    check(cost.measure > cost.encode, "4K media-engine job: the quality check outweighs the encode (bar mustn't sit at 99 %)")
+    let sp = try plan(CompressionSettings())
+    let sw = StageCost(plan: sp, duration: 12, synthetic: false)
+    check(sw.encode > sw.measure, "software encode outweighs its quality check")
+    var p = JobProgress(stage: .measuring, fraction: 0.9, stageFraction: 0.42)
+    check(p.stageTitle == "Checking quality… 42%", "final checks show their own progress")
+    p.stage = .encoding
+    check(p.stageTitle == "Compressing", "encoding title unchanged")
+    // instant model: monotonic in quality level and resolution, bounded by a compressed source
+    let m = media()
+    let balanced = SizeEstimator.instantVideoKbps(media: m, analysis: analysis, plan: sp, level: .balanced)
+    let high = SizeEstimator.instantVideoKbps(media: m, analysis: analysis, plan: sp, level: .high)
+    var small = CompressionSettings(); small.resolution = .hd720
+    let low720 = SizeEstimator.instantVideoKbps(media: m, analysis: analysis, plan: try plan(small), level: .balanced)
+    check(high > balanced && balanced > low720, "instant estimate rises with quality and resolution")
+    check(balanced <= 15_000 * 0.85 && balanced > 300, "instant estimate stays under the source bitrate and sane (\(Int(balanced)) kbps)")
+    let t0 = Date()
+    for _ in 0..<1000 { _ = SizeEstimator.instantVideoKbps(media: m, analysis: analysis, plan: sp, level: .balanced) }
+    check(Date().timeIntervalSince(t0) < 0.05, "instant estimate is instant")
+} catch { check(false, "speed tests threw \(error)") }
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -9,7 +9,8 @@ public enum JobStage: String, Sendable, Codable {
     case firstPass = "Analysing motion"
     case encoding = "Compressing"
     case adjusting = "Fine-tuning file size"
-    case measuring = "Measuring quality"
+    case measuring = "Checking quality"
+    case checkingText = "Checking text is readable"
     case finishing = "Finishing"
     case done = "Done"
 }
@@ -22,11 +23,22 @@ public struct JobProgress: Sendable, Equatable {
     public var eta: Double?              // seconds remaining (overall)
     public var speed: Double?            // encoder speed, × realtime
     public static let idle = JobProgress(stage: .waiting, fraction: 0, stageFraction: 0)
+
+    /// The stage name, with its own progress for the checks that run after the encode
+    /// ("Checking quality… 40 %"), so a nearly full bar never looks stuck.
+    public var stageTitle: String {
+        switch stage {
+        case .measuring, .checkingText, .adjusting:
+            return "\(stage.rawValue)… \(Int((min(1, max(0, stageFraction)) * 100).rounded(.down)))%"
+        default: return stage.rawValue
+        }
+    }
 }
 
 /// Maps per-stage progress onto one overall bar using cost weights, and
-/// derives a smoothed ETA. Weights are in "seconds of video encoded at the
-/// final settings" so they reflect real cost, not stage count.
+/// derives a smoothed ETA. Weights are estimated wall-clock seconds of each stage
+/// (from benchmark encoder and VMAF speeds), so the bar doesn't reach 99 % while the
+/// checks after the encode still have minutes to go.
 final class ProgressTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var weights: [(JobStage, Double)] = []

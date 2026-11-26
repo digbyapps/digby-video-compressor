@@ -21,13 +21,21 @@ public struct StudioEvaluation: Sendable {
 
 extension CompressionEngine {
     /// Decide settings for `settings` with a light sample search (cached), and estimate size and time.
-    public func evaluate(_ item: SourceItem, settings: CompressionSettings, workspace: TempWorkspace,
+    /// - Parameter exact: run the same full search the compression runs (and cache it, so
+    ///   compressing with these settings afterwards skips the search).
+    public func evaluate(_ item: SourceItem, settings: CompressionSettings, workspace: TempWorkspace, exact: Bool = false,
                          progress: @escaping @Sendable (Double, String) -> Void) async throws -> StudioEvaluation {
         let item = item.applying(settings.edits)
         let plan = try self.plan(item, settings: settings)
         let key = "light-" + DecisionCache.key(item, settings)
         let d: EncodeDecision
         if let full = await decisionCache.get(DecisionCache.key(item, settings)) { d = full }
+        else if exact {
+            let tracker = ProgressTracker { p in progress(p.fraction, p.detail ?? p.stage.rawValue) }
+            tracker.configure([(.sampling, 3), (.optimising, 30)])
+            d = try await decide(item, plan: plan, settings: settings, workspace: workspace, tracker: tracker)
+            await decisionCache.set(DecisionCache.key(item, settings), d)
+        }
         else if let cached = await decisionCache.get(key) { d = cached }
         else {
             let tracker = ProgressTracker { p in progress(p.fraction, p.detail ?? p.stage.rawValue) }
@@ -159,6 +167,41 @@ public enum SizeEstimator {
         return secs + 3
     }
 
+    /// Instant estimate of the video bitrate (kbps) for `plan` from the content analysis and the
+    /// source's own bitrate alone: no encoding. Calibrated on the benchmark clips
+    /// (Benchmarks/results/m1max_1080p.jsonl, SVT-AV1 at VMAF 93): synthetic content needs about
+    /// 0.0013 bits per pixel, camera footage about 0.018, rising steeply with detail and motion.
+    /// It's rough (the same analysis scores can hide a 10× spread), so callers show it as a wide
+    /// range until a sample encode narrows it.
+    public static func instantVideoKbps(media: MediaInfo, analysis a: ContentAnalysis, plan: EncodePlan, level: QualityLevel) -> Double {
+        let synthetic = a.isSynthetic || a.kind == .screenRecording
+        let fps = max(1, plan.params.frameRate)
+        let pixels = Double(plan.outputSize.pixels)
+        // content model, as SVT-AV1 at Balanced
+        let c = max(0.1, a.complexity) / (synthetic ? 0.4 : 1.0)
+        let bpp = (synthetic ? 0.0013 : 0.018) * pow(c, 1.5)
+        var kbps = bpp * pixels * fps / 1000
+            * codecFactor(plan.encoder, synthetic: synthetic) * levelFactor(level, synthetic: synthetic) / levelFactor(.balanced, synthetic: synthetic)
+        // An already-compressed source carries its own complexity signal: a delivery-bitrate
+        // file (≲0.3 bits per pixel) re-encodes to a predictable share of it.
+        if let src = media.video.bitrate.map({ Double($0) / 1000 }), src > 0 {
+            let srcBPP = src * 1000 / (Double(max(1, media.video.codedSize.pixels)) * max(1, media.video.frameRate))
+            let share: Double? = ["h264": 0.45, "hevc": 0.65, "vp9": 0.65, "av1": 0.85, "mpeg4": 0.3, "mpeg2video": 0.25][media.video.codec]
+            if let share, srcBPP < 0.3 {
+                let fromSource = src * share * codecFactor(plan.encoder, synthetic: synthetic) / codecFactor(.x265, synthetic: synthetic)
+                    * levelFactor(level, synthetic: synthetic) / levelFactor(.balanced, synthetic: synthetic)
+                    * resolutionFactor(from: media.video.codedSize, to: plan.outputSize)
+                kbps = pow(kbps, 0.25) * pow(fromSource, 0.75)      // geometric blend, 3:1 towards the source
+            }
+            // the engine never lets a re-encode grow past ~85 % of a compressed source
+            if !["prores", "dnxhd", "ffv1", "rawvideo"].contains(media.video.codec) {
+                let ratio = (pixels / Double(max(1, media.video.codedSize.pixels))).squareRoot()
+                kbps = min(kbps, src * 0.85 * min(1, max(0.5, ratio)))
+            }
+        }
+        return max(16, kbps)
+    }
+
     /// Scale a measured anchor (bytes of video for `anchorPlan`) to another plan.
     public static func scale(videoBytes: Double, from a: EncodePlan, aLevel: QualityLevel, to b: EncodePlan, bLevel: QualityLevel,
                              synthetic: Bool) -> Double {
@@ -167,4 +210,38 @@ public enum SizeEstimator {
             * codecFactor(b.encoder, synthetic: synthetic) / codecFactor(a.encoder, synthetic: synthetic)
             * resolutionFactor(from: a.outputSize, to: b.outputSize)
     }
+}
+
+/// Rough wall-clock cost of each stage of a job on this class of Mac (M1 Max benchmark speeds),
+/// used to weight the progress bar so each stage moves it in proportion to its real time.
+struct StageCost {
+    /// The final quality check scores at most this many frames, spread over the whole video.
+    static let scoredFrames = 600
+
+    let fps: Double, frames: Double, megapixels: Double, encodeFPS: Double, synthetic: Bool, plan: EncodePlan
+
+    init(plan: EncodePlan, duration D: Double, synthetic: Bool) {
+        self.plan = plan; self.synthetic = synthetic
+        fps = max(1, plan.params.frameRate)
+        frames = D * fps
+        megapixels = max(0.25, Double(plan.outputSize.pixels) / (1920 * 1080))
+        encodeFPS = SizeEstimator.speed(plan.encoder, plan.params.speed, synthetic: synthetic) / megapixels
+    }
+
+    /// VMAF scoring speed at a given size (≈45 frames/s at 1080p with all cores).
+    static func vmafFPS(_ mp: Double) -> Double { 45 / max(0.25, mp) }
+
+    var encode: Double { frames / max(0.5, encodeFPS) }
+    /// Decoding both files in full (media engine) plus scoring the subsampled frames.
+    var measure: Double { frames / (400 / megapixels) + min(frames, Double(Self.scoredFrames)) / Self.vmafFPS(megapixels) + 1 }
+    var sampling: Double { min(frames, 12 * fps) / (90 / megapixels) + 2 }
+    func search(candidates: Int, textGuard moments: Int) -> Double {
+        let sample = min(frames, 12 * fps)
+        let searchMP = megapixels
+        let proxyFPS = SizeEstimator.speed(plan.encoder, min(plan.params.speed, .balanced), synthetic: synthetic) / max(0.25, searchMP)
+        let probe = sample * (1 / max(0.5, proxyFPS) + 1 / Self.vmafFPS(searchMP))
+        let confirm = sample * (1 / max(0.5, encodeFPS) + 1 / Self.vmafFPS(megapixels))
+        return Double(candidates) * (3 * probe + 1.5 * confirm) + Double(moments) * 6
+    }
+    func textCheck(moments: Int) -> Double { 8 + Double(moments) * 4 }
 }

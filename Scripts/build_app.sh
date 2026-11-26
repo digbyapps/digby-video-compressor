@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 VERSION=$(cat VERSION)
-BUILD="$ROOT/build"
+BUILD="${DIGBY_BUILD_DIR:-$ROOT/build}"     # DIGBY_BUILD_DIR: build elsewhere (e.g. while the app in build/ is open)
 APP="$BUILD/Digby Video Compressor.app"
 C="$APP/Contents"
 

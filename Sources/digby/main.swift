@@ -143,6 +143,7 @@ while i < args.count {
         jobs = n
     case "--out": outDir = URL(fileURLWithPath: value(), isDirectory: true); outGiven = true
     case "--json": json = true
+    case "--exact": break                              // estimate: run the full search
     case "--verbose": Log.echoToStderr = true
     default: fail("unknown option \(args[i])")
     }
@@ -162,11 +163,18 @@ func compressOne(_ engine: CompressionEngine, _ file: URL) async throws {
         FileHandle.standardError.write("black bars: \(item.blackBars.map { "\($0)" } ?? "none")\n".data(using: .utf8)!)
     }
     let t0 = Date()
-    final class Clock: @unchecked Sendable { var last = Date.distantPast }
+    final class Clock: @unchecked Sendable { var last = Date.distantPast; var stage = ""; var stageStart = Date() }
     let clock = Clock()
+    // DIGBY_STAGE_LOG=1: one line per stage change with its wall time (for profiling)
+    let stageLog = ProcessInfo.processInfo.environment["DIGBY_STAGE_LOG"] != nil
     let dir = outGiven ? outDir : file.deletingLastPathComponent()
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     var r = try await engine.compress(item, settings: settings, destinationDirectory: dir) { p in
+        let key = p.stage.rawValue + " " + (p.detail ?? "")
+        if stageLog, key != clock.stage {
+            FileHandle.standardError.write(String(format: "\n[stage] %6.1f s  (prev %5.1f s)  %5.1f%%  %@", Date().timeIntervalSince(t0), Date().timeIntervalSince(clock.stageStart), p.fraction * 100, key).data(using: .utf8)!)
+            clock.stage = key; clock.stageStart = Date()
+        }
         if Date().timeIntervalSince(clock.last) > 2 || p.stage == .finishing {
             clock.last = Date()
             let eta = p.eta.map { " ETA " + Fmt.eta($0) } ?? ""
@@ -227,7 +235,15 @@ let task = Task {
             let item = try await engine.inspect(input)
             let ws = try TempWorkspace(label: "cli-estimate")
             let t0 = Date()
-            let e = try await engine.evaluate(item, settings: settings, workspace: ws) { _, _ in }
+            if let plan = try? engine.plan(item, settings: settings) {
+                let level: QualityLevel = { if case .quality(let l) = settings.goal { return l }; return .balanced }()
+                let m = item.applying(settings.edits).media
+                let kbps = SizeEstimator.instantVideoKbps(media: m, analysis: item.analysis, plan: plan, level: level)
+                let bytes = (kbps + Double(plan.streams.audioKbps)) * 125 * m.duration
+                print(String(format: "instant      ≈ %@ (video %.0f kbps) in %.1f ms", Fmt.bytes(Int64(bytes)), kbps, Date().timeIntervalSince(t0) * 1000))
+            }
+            let exact = CommandLine.arguments.contains("--exact")
+            let e = try await engine.evaluate(item, settings: settings, workspace: ws, exact: exact) { _, _ in }
             print("estimate     ≈ \(Fmt.bytes(e.predictedBytes)) (\(e.outputSize), \(e.codec.rawValue)) in \(Int(Date().timeIntervalSince(t0))) s")
             print("settings     \(e.summary)")
             print("time         about \(Fmt.eta(e.estimatedSeconds)) to compress")

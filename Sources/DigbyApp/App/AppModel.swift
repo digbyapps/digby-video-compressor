@@ -305,24 +305,44 @@ final class AppModel {
 
     // MARK: estimates
 
-    /// One light sample search per video (only while no software encode is using the CPU), so the
-    /// settings panel can show sizes; every other choice is scaled from it.
+    /// Refine the instant estimate in the background (only while no software encode is using the
+    /// CPU). Quick: one light sample search per video, every other choice scaled from it.
+    /// Accurate: a light search at exactly the chosen settings, redone (debounced) when they change.
+    /// Exact: the full search the compression runs, cached so compressing reuses it.
+    /// The panel shows the instant figure meanwhile, so nothing here ever blocks the UI.
     func ensureEstimate(_ item: QueueItem) {
         guard let engine, let source = item.source, !softwareBusy else { return }
-        if case .none = item.estimate {} else if case .failed = item.estimate {} else { return }
+        let accuracy = prefs.estimateAccuracy
         var s = item.settings
-        if case .targetSize = s.goal { s.goal = .quality(.balanced) }
+        if accuracy == .quick, case .targetSize = s.goal { s.goal = .quality(.balanced) }
+        switch item.estimate {
+        case .none, .failed: break
+        case .running: if item.estimateFor == s { return }
+        case .ready(let a):
+            if accuracy == .quick || (a.settings == s && (a.exact || accuracy != .exact)) { return }
+        }
         guard let plan = try? engine.plan(source, settings: s) else { return }
-        item.estimate = .running
+        item.estimateTask?.cancel()
+        if case .ready = item.estimate {} else { item.estimate = .running }
+        item.estimateFor = s
+        item.estimateRefining = true
+        let exact = accuracy == .exact
+        let debounce = accuracy != .quick
         item.estimateTask = Task {
+            if debounce { try? await Task.sleep(for: .milliseconds(700)) }
+            guard !Task.isCancelled else { return }
             do {
                 let ws = try TempWorkspace(label: "estimate")
                 defer { ws.remove() }
-                let e = try await engine.evaluate(source, settings: s, workspace: ws) { _, _ in }
-                item.estimate = .ready(.init(settings: s, plan: plan, evaluation: e))
+                let e = try await engine.evaluate(source, settings: s, workspace: ws, exact: exact) { _, _ in }
+                guard !Task.isCancelled else { return }
+                item.estimate = .ready(.init(settings: s, plan: plan, evaluation: e, exact: exact))
             } catch {
-                item.estimate = Task.isCancelled ? .none : .failed
+                if Task.isCancelled { return }
+                if case .ready = item.estimate {} else { item.estimate = .failed }
             }
+            item.estimateRefining = false
+            item.estimateFor = nil
         }
     }
 
@@ -372,7 +392,10 @@ final class AppModel {
         }
         // estimates would compete with a software encoder for the CPU
         if list.contains(where: { Self.lane($0.settings) == .software }) {
-            for i in items { if case .running = i.estimate { i.estimateTask?.cancel(); i.estimate = .none } }
+            for i in items where i.estimateRefining {
+                i.estimateTask?.cancel(); i.estimateRefining = false; i.estimateFor = nil
+                if case .running = i.estimate { i.estimate = .none }
+            }
         }
         for v in list { v.job = .queued }
         saveQueue()

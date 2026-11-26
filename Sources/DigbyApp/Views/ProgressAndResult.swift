@@ -9,7 +9,7 @@ struct ProgressCard: View {
     var body: some View {
         Card {
             HStack(alignment: .firstTextBaseline) {
-                Text(progress.stage.rawValue).font(.display(19, weight: .medium)).tracking(em: -0.012, size: 19)
+                Text(progress.stageTitle).font(.display(19, weight: .medium)).tracking(em: -0.012, size: 19)
                 Spacer()
                 Text("\(Int((progress.fraction * 100).rounded(.down)))%").font(.display(30, weight: .light)).tracking(em: -0.03, size: 30).monospacedDigit()
             }

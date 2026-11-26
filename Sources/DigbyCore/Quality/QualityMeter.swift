@@ -66,19 +66,24 @@ public struct QualityMeter: Sendable {
         let model = size.shortSide >= 1800 ? "vmaf_4k_v0.6.1" : "vmaf_v0.6.1"
         let log = workspace.file("vmaf-\(UUID().uuidString.prefix(6)).json")
         let threads = max(2, ProcessInfo.processInfo.activeProcessorCount)
-        let ref = [referenceFilters, "scale=\(size.width):\(size.height):flags=bicubic", "format=yuv420p10le"].compactMap { $0 }.joined(separator: ",")
+        // Subsampling drops frames *before* scaling (libvmaf's own n_subsample still scales and
+        // converts every frame, which was most of the cost at 4K). Both sides drop the same
+        // frame numbers, so index pairing below still matches them.
+        let pick = subsample > 1 ? "select=not(mod(n\\,\(subsample)))," : ""
+        let ref = [referenceFilters, pick.isEmpty ? nil : String(pick.dropLast()), "scale=\(size.width):\(size.height):flags=bicubic", "format=yuv420p10le"].compactMap { $0 }.joined(separator: ",")
         // Pair frames by index, not timestamp: containers round timestamps differently
         // (MKV to 1 ms, MP4 exactly), and timestamp pairing then matches neighbouring
         // frames. Both sides carry the same frame sequence because the reference goes
         // through the encode's own filter chain.
         let index = "settb=1/1000,setpts=N"
-        let graph = "[0:v]\(index),scale=\(size.width):\(size.height):flags=bicubic,format=yuv420p10le[d];" +
+        let graph = "[0:v]\(pick)\(index),scale=\(size.width):\(size.height):flags=bicubic,format=yuv420p10le[d];" +
                     "[1:v]\(ref),\(index)[r];" +
                     "[d][r]libvmaf=model='version=\(model)':feature='name=psnr|name=float_ssim':n_threads=\(threads)" +
-                    ":n_subsample=\(max(1, subsample)):log_fmt=json:log_path=\(log.path):shortest=1"
+                    ":log_fmt=json:log_path=\(log.path):shortest=1"
         try await FFmpegRun(tools: tools).run((distortedCodec.map { Self.decodeArgs($0 == .hevc ? "hevc" : $0 == .h264 ? "h264" : "") } ?? []) + ["-i", distorted.path] + (referenceInput ?? ["-i", reference.path]) + ["-filter_complex", graph, "-f", "null", "-"],
-                                              duration: duration, onTick: { onProgress?($0.fraction) })
-        return try Self.parse(log, model: model, fps: fps, scope: scope)
+                                              // the output's timestamps are frame numbers in ms (setpts=N above)
+                                              duration: max(0.001, duration * fps / Double(max(1, subsample)) / 1000), onTick: { onProgress?($0.fraction) })
+        return try Self.parse(log, model: model, fps: fps / Double(max(1, subsample)), scope: scope)
     }
 
     static func parse(_ url: URL, model: String, fps: Double, scope: QualityReport.Scope) throws -> QualityReport {
@@ -97,7 +102,7 @@ public struct QualityMeter: Sendable {
         // worst moments: lowest-scoring frames, at least 2 s apart
         var worst: [QualityReport.WorstMoment] = []
         for (n, s) in frames.sorted(by: { $0.1 < $1.1 }) {
-            let t = Double(n) / max(fps, 1)
+            let t = Double(n) / max(fps, 0.01)
             if worst.allSatisfy({ abs($0.time - t) > 2 }) { worst.append(.init(time: t, vmaf: s)) }
             if worst.count == 6 { break }
         }

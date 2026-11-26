@@ -140,6 +140,7 @@ struct SettingsPanel: View {
             // new videos start from the main (first) version's settings, not from a "Fit for email" copy
             if item.current.id == item.versions.first?.id { model.prefs.settings = new.withoutEdits; model.prefs.save() }
             appliedNote = nil; item.appliedNote = nil
+            model.ensureEstimate(item)      // Accurate / Exact re-measure (debounced); Quick does nothing here
         }
         .onAppear { model.ensureEstimate(item) }
     }
@@ -183,7 +184,7 @@ struct OptionPill: View {
                 .accessibilityValue(caption.map { e in e.wouldSkip ? "would be skipped" : "about \(Fmt.bytes(e.bytes))" } ?? "")
             EstimateLabel(estimate: caption, original: original, compact: true)
                 .font(.system(size: 10.5)).foregroundStyle(caption?.wouldSkip == true ? Brand.warn : .secondary)
-                .help(caption.map { e in e.wouldSkip ? "Would save too little and be skipped" : (e.measured ? "Measured on sample scenes" : "Estimated from a measurement and benchmark ratios") } ?? "Estimating…")
+                .help(caption.map { e in e.wouldSkip ? "Would save too little and be skipped" : "Estimate, likely \(Fmt.bytes(e.low))–\(Fmt.bytes(e.high)). \(e.basis.help)" } ?? "Estimating…")
         }
     }
 }
@@ -214,7 +215,8 @@ struct TextGuardRow: View {
     }
 }
 
-/// The headline estimate for the current settings.
+/// The headline estimate for the current settings: shown at once (from a model), then
+/// quietly refined by test encodes in the background, always labelled with its likely range.
 struct EstimateSummary: View {
     @Environment(AppModel.self) private var model
     var item: QueueItem
@@ -223,7 +225,13 @@ struct EstimateSummary: View {
         let media = item.source!.media
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("Estimated result").font(.system(size: 10.5, weight: .semibold)).textCase(.uppercase).foregroundStyle(Brand.muted).tracking(em: 0.12, size: 10.5)
+                HStack(spacing: 6) {
+                    Text("Estimated result").font(.system(size: 10.5, weight: .semibold)).textCase(.uppercase).foregroundStyle(Brand.muted).tracking(em: 0.12, size: 10.5)
+                    if item.estimateRefining {
+                        ProgressView().controlSize(.mini)
+                        Text(model.prefs.estimateAccuracy == .exact ? "measuring…" : "refining…").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
                 if let e = item.estimate(for: item.settings, engine: model.engine) {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         EstimateLabel(estimate: e, original: media.fileSize).font(.system(size: 20, weight: .semibold, design: .rounded))
@@ -231,21 +239,45 @@ struct EstimateSummary: View {
                         Text("about \(Fmt.eta(e.seconds))").foregroundStyle(.secondary)
                     }
                     Text(e.wouldSkip ? "This would save less than your minimum, so the video would be skipped and left as it is."
-                                     : (e.measured ? "Measured on sample scenes of this video." : "Scaled from a measurement on this video using the differences measured between settings. Preview Studio gives exact figures."))
+                                     : "Likely \(Fmt.bytes(e.low))–\(Fmt.bytes(e.high)). \(e.basis.help)")
                         .font(.caption).foregroundStyle(e.wouldSkip ? Brand.warn : Color.secondary)
+                } else if case .failed = item.estimate {
+                    Text("Couldn’t estimate this video.").foregroundStyle(.secondary)
                 } else {
-                    switch item.estimate {
-                    case .running: HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Measuring sample scenes…").foregroundStyle(.secondary) }
-                    case .failed: Text("Couldn’t estimate this video.").foregroundStyle(.secondary)
-                    default: Text(model.softwareBusy ? "Estimates appear when the current compression finishes (it needs the whole processor)." : "Waiting…").foregroundStyle(.secondary)
-                    }
+                    Text("Waiting…").foregroundStyle(.secondary)
+                }
+                if model.softwareBusy, !item.hasMeasuredEstimate {
+                    Text("Test encodes wait while a compression is using the whole processor.").font(.caption2).foregroundStyle(.tertiary)
                 }
             }
             Spacer()
+            EstimateAccuracyMenu()
         }
         .accessibilityElement(children: .combine)
         .padding(14).frame(maxWidth: .infinity, alignment: .leading)
         .background(Brand.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+/// Quick (default) / Accurate / Exact: how much test encoding the estimates may do.
+struct EstimateAccuracyMenu: View {
+    @Environment(AppModel.self) private var model
+    var body: some View {
+        Menu {
+            Picker("Estimate", selection: Binding(get: { model.prefs.estimateAccuracy }, set: { v in
+                model.prefs.estimateAccuracy = v; model.prefs.save()
+                if let s = model.selected { model.ensureEstimate(s) }
+            })) {
+                ForEach(Preferences.EstimateAccuracy.allCases) { a in Text(a.label).tag(a) }
+            }
+            .pickerStyle(.inline)
+            Divider()
+            Text(model.prefs.estimateAccuracy.help)
+        } label: {
+            Text(model.prefs.estimateAccuracy.label).font(.caption)
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+        .help("Estimate accuracy: \(model.prefs.estimateAccuracy.help)")
     }
 }
 
