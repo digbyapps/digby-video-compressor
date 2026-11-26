@@ -19,8 +19,10 @@ final class AppModel {
     var skipNotice: SkipNotice?
     /// Videos waiting for the user to confirm "Replace originals".
     var replaceConfirmation: [QueueItem]?
-    /// Unfinished videos from the previous session.
+    /// Unfinished videos from the previous session (stopped by closing, or failed), not yet resumed or removed.
     var resumeOffer: [SavedQueue.Entry]?
+    /// The summary shown once after reopening, when the last session left work undone.
+    var lastSession: LastSessionReport?
     /// The batch in progress or just finished.
     var batch: BatchRecord?
     var showBatchReport = false
@@ -87,9 +89,44 @@ final class AppModel {
         } catch {
             engineState = .failed(error.localizedDescription)
         }
-        if let saved = SavedQueue.load() {
-            let pending = saved.entries.filter { $0.pending && FileManager.default.fileExists(atPath: $0.url.path) }
-            if !pending.isEmpty { resumeOffer = pending } else { SavedQueue.clear() }
+        if let saved = SavedQueue.load() { openLastSession(saved) }
+    }
+
+    /// Reads what the last session left behind: builds the summary, tidies half-written files and
+    /// encoders a force quit left running, and tells Digby Video Downloader about its stopped videos.
+    func openLastSession(_ saved: SavedQueue) {
+        let fm = FileManager.default
+        if let e = engine, e.tools.ffmpeg.path.hasPrefix(Bundle.main.bundlePath + "/") { Leftovers.stopOrphans(of: e.tools.ffmpeg.path) }
+        var entries = saved.entries
+        var rows: [LastSessionItem] = []
+        var folders = Set<URL>()
+        for i in entries.indices {
+            entries[i].key = "\(i)"
+            let e = entries[i]
+            guard var o = e.outcome ?? (e.pending ? .stopped : nil) else { continue }
+            let exists = fm.fileExists(atPath: e.url.path)
+            var reason = e.note
+            if o == .stopped {
+                reason = e.wasRunning == true ? "Was being compressed" : e.wasRunning == false ? "Was waiting its turn" : "Stopped when Digby closed"
+                let dir = destination(for: e.url)
+                folders.formUnion([dir, e.url.deletingLastPathComponent(),
+                                   dir.appendingPathComponent(e.url.deletingPathExtension().lastPathComponent + " versions")])
+            }
+            if (o == .stopped || o == .failed) && !exists {
+                o = .failed; reason = "The video is no longer in \(e.url.deletingLastPathComponent().lastPathComponent)"
+            }
+            var name = e.url.lastPathComponent
+            if entries.filter({ $0.url == e.url }).count > 1 { name += " (\(e.settings.versionLabel(macDecodesAV1: macDecodesAV1)))" }
+            rows.append(LastSessionItem(id: "\(i)", name: name, outcome: o, reason: reason, canResume: exists && (o == .stopped || o == .failed)))
+        }
+        for f in folders { Leftovers.sweepPartials(in: f) }
+        let report = LastSessionReport(items: rows, noun: "video")
+        guard report.worthShowing else { SavedQueue.clear(); return }
+        let open = Set(rows.filter(\.canResume).map(\.id))
+        resumeOffer = entries.filter { open.contains($0.key ?? "") }
+        lastSession = report
+        for e in entries where e.handoffSetting != nil && rows.contains(where: { $0.id == e.key && $0.outcome == .stopped }) {
+            reportHandoff(e, .cancelled, note: "Stopped when Digby Video Compressor closed. Resume it there to finish.")
         }
     }
 
@@ -100,7 +137,14 @@ final class AppModel {
         var firstNew: QueueItem?
         var added = 0
         for u in scan.videos where !items.contains(where: { $0.url.standardizedFileURL == u.standardizedFileURL }) {
-            let item = QueueItem(url: u, settings: settings ?? prefs.settings)
+            var s = settings ?? prefs.settings
+            let ticket = HandoffTicket.take(for: u)
+            if let g = ticket?.goal { s.goal = g }
+            let item = QueueItem(url: u, settings: s)
+            if let t = ticket {
+                item.autoStart = true; item.replaceOriginal = t.replaceOriginal
+                item.handoffSetting = HandoffResult.setting(for: t.goal)
+            }
             items.append(item)
             added += 1
             if firstNew == nil { firstNew = item }
@@ -160,9 +204,14 @@ final class AppModel {
             item.source = src
             if item.settings.advanced.profile == nil { item.detectedKind = src.analysis.kind }
             item.thumbnail = try? await FrameGrabber(tools: engine.tools).frame(item.url, at: min(src.media.duration * 0.15, 30), maxDimension: 960)
-            if item.id == selection { ensureEstimate(item) }
+            if item.autoStart {
+                item.autoStart = false
+                enqueue(item, remember: false)
+                report(item, .compressing)
+            } else if item.id == selection { ensureEstimate(item) }
         } catch {
             item.inspectError = error.localizedDescription
+            if item.autoStart { item.autoStart = false; report(item, .failed, note: "Couldn’t read the video: \(error.localizedDescription)") }
         }
     }
 
@@ -312,11 +361,15 @@ final class AppModel {
         for i in list { enqueue(i) }
     }
 
-    func enqueue(_ item: QueueItem, only: [OutputVersion]? = nil) {
+    /// - Parameter remember: make these the settings for the next video (not for Downloader hand-offs,
+    ///   whose choice is made in the Downloader and shouldn't change this app's own defaults).
+    func enqueue(_ item: QueueItem, only: [OutputVersion]? = nil, remember: Bool = true) {
         let list = (only ?? item.pendingVersions).filter(\.isEditable)
         guard item.source != nil, !list.isEmpty else { return }
-        prefs.settings = item.versions[0].settings
-        prefs.save()
+        if remember {
+            prefs.settings = item.versions[0].settings
+            prefs.save()
+        }
         // estimates would compete with a software encoder for the CPU
         if list.contains(where: { Self.lane($0.settings) == .software }) {
             for i in items { if case .running = i.estimate { i.estimateTask?.cancel(); i.estimate = .none } }
@@ -326,29 +379,65 @@ final class AppModel {
         startRunner()
     }
 
-    func resumeSavedQueue() {
-        guard let entries = resumeOffer else { return }
-        resumeOffer = nil
+    /// Resume All: every video stopped by closing (`keys` nil), or just the rows given (Resume / Try Again).
+    func resumeSavedQueue(_ keys: [String]? = nil) {
+        guard let offer = resumeOffer else { return }
+        let stopped = Set(lastSession?.resumable.map(\.id) ?? [])
+        let entries = offer.filter { keys?.contains($0.key ?? "") ?? stopped.contains($0.key ?? "") }
+        resumeOffer = offer.filter { e in !entries.contains { $0.key == e.key } }
+        lastSession?.items.removeAll { r in entries.contains { $0.key == r.id } }
         var seen: [URL: QueueItem] = [:]
         for e in entries {
             if let item = seen[e.url] { item.addVersion(e.settings, select: false); continue }
+            let existing = items.first { $0.url.standardizedFileURL == e.url.standardizedFileURL }
             add(urls: [e.url], skipExisting: false, settings: e.settings)
-            seen[e.url] = items.first { $0.url == e.url }
+            guard let item = items.first(where: { $0.url.standardizedFileURL == e.url.standardizedFileURL }) else { continue }
+            seen[e.url] = item
+            if let h = e.handoffSetting { item.handoffSetting = h; item.replaceOriginal = e.replaceOriginal ?? false }
+            if existing != nil { item.addVersion(e.settings, select: false) }
+            // queued as soon as it has been read (now, if it already was)
+            if item.source != nil { Task { @MainActor in self.enqueue(item, remember: false); self.report(item, .compressing) } }
+            else { item.autoStart = true }
         }
-        // queue them once analysed
-        Task {
-            for _ in 0..<600 {
-                let pending = items.filter { i in entries.contains { $0.url == i.url } }
-                if pending.allSatisfy({ $0.source != nil || $0.inspectError != nil }) {
-                    for i in pending where i.source != nil { enqueue(i) }
-                    return
-                }
-                try? await Task.sleep(nanoseconds: 500_000_000)
-            }
-        }
+        closeLastSessionIfDone()
+        saveQueue()
     }
 
-    func dismissResume() { resumeOffer = nil; SavedQueue.clear() }
+    /// Remove one row of the summary without resuming it.
+    func removeFromLastSession(_ key: String) {
+        if let e = resumeOffer?.first(where: { $0.key == key }) {
+            reportHandoff(e, .cancelled, note: "Removed in Digby Video Compressor")
+            resumeOffer?.removeAll { $0.key == key }
+        }
+        lastSession?.items.removeAll { $0.id == key }
+        closeLastSessionIfDone()
+        saveQueue()
+    }
+
+    /// Dismiss: forget what wasn't resumed.
+    func dismissResume() {
+        for e in resumeOffer ?? [] { reportHandoff(e, .cancelled, note: "Not resumed in Digby Video Compressor") }
+        resumeOffer = nil; lastSession = nil; SavedQueue.clear(); saveQueue()
+    }
+
+    private func closeLastSessionIfDone() {
+        if lastSession?.worthShowing != true { lastSession = nil }
+        if lastSession == nil, resumeOffer?.isEmpty == true { resumeOffer = nil }
+    }
+
+    /// The hand-off note for a saved entry (videos sent by Digby Video Downloader only).
+    private func reportHandoff(_ e: SavedQueue.Entry, _ state: HandoffResult.State, note: String) {
+        guard let setting = e.handoffSetting else { return }
+        HandoffResult(file: e.url.standardizedFileURL.path, state: state, setting: setting, note: note).write()
+    }
+
+    /// On quit: videos sent by the Downloader that are being compressed are reported as stopped there
+    /// (reopening this app resumes them and reports again).
+    func reportStoppedHandoffs() {
+        for i in items where i.handoffSetting != nil && i.isActive {
+            report(i, .cancelled, note: "Stopped when Digby Video Compressor quit. Open it to resume.")
+        }
+    }
 
     private func startRunner() {
         if workers.values.reduce(0, +) == 0 {
@@ -416,7 +505,7 @@ final class AppModel {
 
     private func run(_ item: QueueItem, _ version: OutputVersion) async {
         guard let engine, let source = item.source else { version.job = .failed("Not ready"); return }
-        let mode = prefs.outputMode
+        let mode = item.replaceOriginal ? .replaceOriginals : prefs.outputMode
         let dest = destination(for: item)
         let label: String? = item.hasVersions ? version.settings.versionLabel(macDecodesAV1: macDecodesAV1) : nil
         version.job = .running(.idle)
@@ -478,6 +567,30 @@ final class AppModel {
             }
         }
         version.cancelRequested = false
+        switch version.job {
+        case .done(let r): report(item, .done, result: r)
+        case .skipped(let why): report(item, .skipped, note: why)
+        case .failed(let why): report(item, .failed, note: why)
+        case .cancelled: report(item, .cancelled, note: "Cancelled in Digby Video Compressor")
+        default: break
+        }
+    }
+
+    /// Tell Digby Video Downloader what happened to a video it sent (nothing for any other video).
+    private func report(_ item: QueueItem, _ state: HandoffResult.State, result r: CompressionResult? = nil, note: String? = nil) {
+        guard let setting = item.handoffSetting else { return }
+        var h = HandoffResult(file: item.url.standardizedFileURL.path, state: state, setting: setting, note: note)
+        if let r {
+            h.output = r.outputURL.standardizedFileURL.path
+            h.originalBytes = r.originalBytes
+            h.outputBytes = r.outputBytes
+            h.format = "\(r.codec.rawValue) · \(r.outputSize.width)×\(r.outputSize.height)"
+            h.quality = r.quality?.rating.rawValue
+            h.vmaf = r.quality?.vmaf
+            h.originalTrashed = r.trashedOriginal != nil
+            if !h.originalTrashed, item.replaceOriginal { h.note = r.warnings.first { $0.hasPrefix("The original was kept") } }
+        }
+        h.write()
     }
 
     /// Tell VoiceOver users what happened without moving their focus.
@@ -507,9 +620,33 @@ final class AppModel {
     }
 
     func saveQueue() {
-        let entries = items.flatMap { i in i.versions.map { SavedQueue.Entry(url: i.url, settings: $0.settings, pending: $0.job.isActive) } }
-        if entries.contains(where: \.pending) { SavedQueue(entries: entries, outputMode: prefs.outputMode).save() }
+        var entries = items.flatMap { i in i.versions.map { v in
+            SavedQueue.Entry(url: i.url, settings: v.settings, pending: v.job.isActive, outcome: Self.outcome(v.job), note: Self.note(v.job),
+                             wasRunning: v.job.isActive ? { if case .running = v.job { return true }; return false }() : nil,
+                             handoffSetting: i.handoffSetting, replaceOriginal: i.handoffSetting == nil ? nil : i.replaceOriginal)
+        } }
+        // what the previous session left, still waiting for an answer, survives another quit
+        let offer = resumeOffer ?? []
+        entries += offer.filter { e in !items.contains { $0.url.standardizedFileURL == e.url.standardizedFileURL } }.map { var e = $0; e.key = nil; return e }
+        if entries.contains(where: \.pending) || !offer.isEmpty { SavedQueue(entries: entries, outputMode: prefs.outputMode).save() }
         else if resumeOffer == nil { SavedQueue.clear() }
+    }
+
+    static func outcome(_ j: JobState) -> LastSessionOutcome? {
+        switch j {
+        case .queued, .running: return .stopped
+        case .done, .skipped: return .finished
+        case .failed: return .failed
+        case .cancelled: return .cancelled
+        case .idle: return nil
+        }
+    }
+    static func note(_ j: JobState) -> String? {
+        switch j {
+        case .skipped(let why): return "Kept as it was: \(why)"
+        case .failed(let why): return why
+        default: return nil
+        }
     }
 
     /// Undo "Replace originals" for the last batch: originals back from the Trash, copies to the Trash.

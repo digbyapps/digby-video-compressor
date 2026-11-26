@@ -18,8 +18,10 @@ struct ProgressCard: View {
                 if let d = progress.detail { Text(d).foregroundStyle(.secondary).lineLimit(1) }
                 Spacer()
                 if let s = progress.speed, s > 0 { Label(String(format: "%.1f× real time", s), systemImage: "speedometer").foregroundStyle(.secondary) }
-                if let eta = progress.eta { Label("About \(Fmt.eta(eta)) left", systemImage: "clock").foregroundStyle(.secondary) }
-                else { Label("Estimating time…", systemImage: "clock").foregroundStyle(.tertiary) }
+                Group {
+                    if let eta = progress.eta { Label("About \(Fmt.eta(eta)) left", systemImage: "clock").foregroundStyle(.secondary) }
+                    else { Label("Estimating time…", systemImage: "clock").foregroundStyle(.tertiary) }
+                }.fixedSize()
             }
             .font(.callout).monospacedDigit()
             HStack {
@@ -84,7 +86,7 @@ struct ResultCard: View {
                     ? " The rating compares the result with the original at the new size; it doesn’t count the detail given up by making the picture smaller."
                     : "")).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            HStack(spacing: 8) {
+            FlowLayout(spacing: 8, lineSpacing: 6) {
                 if result.previewableOnThisMac {
                     Chip(text: "Plays in Quick Look on this Mac", systemImage: "eye", tint: Brand.good)
                 } else {
@@ -112,13 +114,27 @@ struct ResultCard: View {
                 }
             }
 
-            HStack(spacing: 10) {
-                Button { play() } label: { Label("Play", systemImage: "play.fill") }
-                Button { NSWorkspace.shared.activateFileViewerSelecting([result.outputURL]) } label: { Label("Show in Finder", systemImage: "folder") }
+            // One row when it fits, otherwise two rows (open/share, then keep/redo), otherwise wrapped.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { openButtons; Spacer(minLength: 10); keepButtons }
+                VStack(alignment: .leading, spacing: 10) { HStack(spacing: 10) { openButtons }; HStack(spacing: 10) { keepButtons } }
+                FlowLayout(spacing: 10, lineSpacing: 10) { openButtons; keepButtons }
+            }
+            .lineLimit(1)
+            .controlSize(.large)
+        }
+        .task { playable = try? await AVURLAsset(url: result.outputURL).load(.isPlayable) }
+    }
+
+    @ViewBuilder var openButtons: some View {
+                Button { play() } label: { Label("Play", systemImage: "play.fill") }.fixedSize()
+                Button { NSWorkspace.shared.activateFileViewerSelecting([result.outputURL]) } label: { Label("Show in Finder", systemImage: "folder") }.fixedSize()
                 ShareLink(item: result.outputURL) { Label("Share", systemImage: "square.and.arrow.up") }
-                    .help("Send with AirDrop, Mail, Messages and more")
-                Button { compare() } label: { Label("Compare with Original", systemImage: "rectangle.split.2x1") }
-                Spacer()
+                    .help("Send with AirDrop, Mail, Messages and more").fixedSize()
+                Button { compare() } label: { Label("Compare with Original", systemImage: "rectangle.split.2x1") }.fixedSize()
+    }
+
+    @ViewBuilder var keepButtons: some View {
                 if let restore { Button("Restore Original") { restore() }.help("Bring the original back from the Trash and move this compressed copy to the Trash") }
                 if let trash {
                     Button("Move to Trash") { confirmTrash = true }
@@ -128,11 +144,7 @@ struct ResultCard: View {
                         } message: { Text("Your original isn’t affected. You can take the file back out of the Trash.") }
                 }
                 if let another { Button("Make Another Version") { another() }.help("Make this video again with different settings, e.g. a smaller size for email") }
-                Button("Compress Again…") { again() }.buttonStyle(.link)
-            }
-            .controlSize(.large)
-        }
-        .task { playable = try? await AVURLAsset(url: result.outputURL).load(.isPlayable) }
+                Button("Compress Again…") { again() }.buttonStyle(.link).fixedSize()
     }
 
     var targetCaption: String? {

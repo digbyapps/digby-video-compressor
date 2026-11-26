@@ -89,6 +89,15 @@ struct SourceHeaderView: View {
 
     var body: some View {
         Card(padding: 14) {
+            // Full-size thumbnail when there's room, a smaller one in a narrow window. The details wrap rather than clip.
+            ViewThatFits(in: .horizontal) {
+                header(thumbWidth: 240, detailsWidth: 400)
+                header(thumbWidth: 168, detailsWidth: 0)
+            }
+        }
+    }
+
+    func header(thumbWidth: CGFloat, detailsWidth: CGFloat) -> some View {
             HStack(alignment: .top, spacing: 16) {
                 ZStack {
                     RoundedRectangle(cornerRadius: Brand.controlRadius, style: .continuous).fill(Brand.altitude.opacity(0.92))
@@ -98,29 +107,29 @@ struct SourceHeaderView: View {
                         ProgressView().controlSize(.small)
                     }
                 }
-                .frame(width: 240, height: 135).clipShape(RoundedRectangle(cornerRadius: Brand.controlRadius, style: .continuous))
+                .frame(width: thumbWidth, height: thumbWidth * 9 / 16).clipShape(RoundedRectangle(cornerRadius: Brand.controlRadius, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text(item.name).font(.display(19, weight: .medium)).tracking(em: -0.012, size: 19).lineLimit(2).truncationMode(.middle)
                     if let s = item.source {
                         let m = s.media
-                        HStack(spacing: 18) {
+                        FlowLayout(spacing: 18, lineSpacing: 8) {
                             Meta(label: "Size", value: Fmt.bytes(m.fileSize))
                             Meta(label: "Resolution", value: "\(m.displaySize.width) × \(m.displaySize.height)")
                             Meta(label: "Duration", value: Fmt.duration(m.duration))
                             Meta(label: "Frame rate", value: String(format: m.video.frameRate.truncatingRemainder(dividingBy: 1) == 0 ? "%.0f fps" : "%.2f fps", m.video.frameRate) + (m.video.isVariableFrameRate ? " (variable)" : ""))
                         }
                         FlowChips(chips: chips(s))
-                        HStack(spacing: 6) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Image(systemName: s.analysis.kind.symbolName).foregroundStyle(Brand.accent)
-                            Text("Detected: ").foregroundStyle(.secondary) + Text(s.analysis.kind.friendlyName).fontWeight(.medium)
-                            Text("· \(s.analysis.summary)").foregroundStyle(.secondary).lineLimit(1)
+                            (Text("Detected: ").foregroundStyle(.secondary) + Text(s.analysis.kind.friendlyName).fontWeight(.medium)
+                             + Text(" · \(s.analysis.summary)").foregroundStyle(.secondary))
+                                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                         }.font(.callout)
                     }
                 }
-                Spacer(minLength: 0)
+                .frame(minWidth: 0, idealWidth: detailsWidth, maxWidth: .infinity, alignment: .leading)
             }
-        }
     }
 
     func chips(_ s: SourceItem) -> [(String, String)] {
@@ -143,6 +152,7 @@ struct SourceHeaderView: View {
                 Text(label).font(.system(size: 10, weight: .semibold)).textCase(.uppercase).tracking(em: 0.1, size: 10).foregroundStyle(Brand.muted)
                 Text(value).font(.system(size: 13, weight: .medium)).monospacedDigit()
             }
+            .lineLimit(1).fixedSize()
         }
     }
 }
@@ -150,7 +160,7 @@ struct SourceHeaderView: View {
 struct FlowChips: View {
     var chips: [(String, String)]
     var body: some View {
-        HStack(spacing: 6) { ForEach(chips.indices, id: \.self) { Chip(text: chips[$0].0, systemImage: chips[$0].1) } }
+        FlowLayout(spacing: 6, lineSpacing: 6) { ForEach(chips.indices, id: \.self) { Chip(text: chips[$0].0, systemImage: chips[$0].1) } }
     }
 }
 
@@ -176,10 +186,20 @@ struct ActionBar: View {
     var preview: () -> Void
 
     var body: some View {
+        // One row when it fits; otherwise the save location goes on its own line above the buttons.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) { DestinationMenu(item: item); Spacer(minLength: 12); buttons }
+            VStack(alignment: .leading, spacing: 10) {
+                DestinationMenu(item: item)
+                HStack(spacing: 12) { Spacer(minLength: 0); buttons }
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    @ViewBuilder var buttons: some View {
         let n = item.pendingVersions.count
         HStack(spacing: 12) {
-            DestinationMenu(item: item)
-            Spacer()
             if !item.hasVersions { AddVersionMenu(item: item, label: "Add Version").controlSize(.large) }
             Button { preview() } label: { Label("Preview Studio…", systemImage: "square.grid.2x2") }
                 .controlSize(.large)
@@ -192,7 +212,7 @@ struct ActionBar: View {
             .keyboardShortcut(.return, modifiers: .command)
             .disabled(plan == nil || n == 0)
         }
-        .padding(.top, 2)
+        .lineLimit(1).fixedSize()
     }
 
     func title(_ n: Int) -> String {

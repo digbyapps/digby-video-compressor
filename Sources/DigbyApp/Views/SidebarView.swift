@@ -76,7 +76,7 @@ struct SidebarRow: View {
                     Label("\(item.versions.count) versions", systemImage: "square.stack.3d.down.right")
                         .font(.caption2.weight(.medium)).foregroundStyle(Brand.accent).lineLimit(1)
                 }
-                status
+                status.lineLimit(1).truncationMode(.tail)
             }
         }
         .padding(.vertical, 3)
@@ -145,5 +145,7 @@ struct QueueSummary: View {
             }
         }
         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+        .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity)
     }
 }

@@ -22,22 +22,15 @@ enum AboutWindow {
 }
 
 struct AboutView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development build" }
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .bottomLeading) {
-                SkyBand(drift: !reduceMotion)
-                LinearGradient(colors: [.clear, Brand.altitude.opacity(0.55)], startPoint: .center, endPoint: .bottom)
-                HStack(alignment: .bottom, spacing: 14) {
-                    Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72)
-                        .shadow(color: .black.opacity(0.35), radius: 10, y: 5)
-                    DigbyLockup(size: 26).padding(.bottom, 18)
-                }
-                .padding(.horizontal, 24).padding(.bottom, 18)
+            VStack(spacing: 14) {
+                AppIconMark(size: 96)
+                DigbyLockup(size: 24, color: .primary)
             }
-            .frame(height: 220).clipped()
+            .padding(.top, 40)
             VStack(spacing: 6) {
                 Text("Less weight. Same picture.").font(.display(22, weight: .light)).tracking(em: -0.025, size: 22)
                 Text("Version \(version)").font(.callout).foregroundStyle(Brand.muted).monospacedDigit().padding(.top, 2)

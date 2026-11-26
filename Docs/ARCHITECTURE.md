@@ -137,3 +137,10 @@ the YouTube comparison script use it, and it's handy for batch scripting.
   `EditorView` (trim, crop, rotate, adjust) with FFmpeg-decoded frames; two queue lanes (`AppModel.Lane`: software
   encodes one at a time, media-engine encodes alongside); Finder service `compressFiles` (`NSServices` in the
   bundle's Info.plist); VoiceOver announcements on completion and failure.
+
+## Resume after quit (2026-11-26, uncommitted on updates-2026-11)
+* `Queue.json` (`SavedQueue`) is written whenever the queue changes, so quitting, a force quit, a crash or a restart keeps it. Entries now also record how each job ended (`outcome`, `note`, `wasRunning`) and, for videos sent by Digby Video Downloader, `handoffSetting` and `replaceOriginal`. Before this change, resumed hand-off jobs never reported back. `DIGBY_SUPPORT_DIR` overrides the folder for tests.
+* On reopen (`AppModel.openLastSession`): hidden `.digby-partial-*` files left by a killed encode are deleted (only those untouched for 2 minutes), and orphaned copies of the app's own bundled FFmpeg are stopped. A summary strip (`LastSessionSummary` in `Views/ContentView.swift`) lists finished, stopped, failed (with the reason) and cancelled jobs, with Resume All, Details (per-row Resume / Try Again / Remove) and Dismiss.
+* Hand-off results: on quit, and again on reopen after a crash, stopped hand-off jobs are reported to `Handoff/Results/` as `cancelled` ("Stopped when Digby Video Compressor closed…"). Resuming them reports `compressing`, then the result. Remove or Dismiss reports them as `cancelled`.
+* Code: `DigbyCore/Support/LastSession.swift` (new), `App/Preferences.swift` (SavedQueue), `App/AppModel.swift`, `App/DigbyApp.swift` (willTerminate), `Views/ContentView.swift`. `digby-tests`: 96 pass (9 new).
+* Undo: delete `LastSession.swift` and revert those hunks (other sessions' uncommitted work shares these files). Old `Queue.json` files still load.

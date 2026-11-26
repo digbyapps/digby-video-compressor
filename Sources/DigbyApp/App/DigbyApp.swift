@@ -13,7 +13,10 @@ struct DigbyVideoCompressorApp: App {
                 .environment(model)
                 .tint(Brand.accent)
                 .frame(minWidth: 940, minHeight: 640)
-                .task { await model.start(); DebugSnapshot.scheduleIfRequested(model: model) }
+                .task {
+                    if DebugSnapshot.layoutOnly { await DebugSnapshot.startForLayout(model) } else { await model.start() }
+                    DebugSnapshot.scheduleIfRequested(model: model)
+                }
                 .onOpenURL { model.add(urls: [$0]) }
         }
         .windowToolbarStyle(.unified(showsTitle: true))
@@ -78,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // No orphaned encoders, no half-written files left behind.
+        AppModel.shared?.reportStoppedHandoffs()
         AppModel.shared?.saveQueue()
         ProcessRegistry.shared.terminateAll()
         TempWorkspace.sweepStale(olderThan: 0)

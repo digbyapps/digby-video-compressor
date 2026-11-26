@@ -81,7 +81,8 @@ struct EditsRow: View {
 
     var body: some View {
         let e = item.settings.edits
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
+          FlowLayout(spacing: 8, lineSpacing: 6) {
             Button { openEditor() } label: { Label("Trim, Crop & Adjust…", systemImage: "crop") }
                 .help("Keep only part of the video, remove black bars, rotate, even out the volume")
                 .keyboardShortcut("e", modifiers: .command)
@@ -95,7 +96,8 @@ struct EditsRow: View {
             if e.normalizeLoudness { Chip(text: "Volume evened out", systemImage: "speaker.wave.2", tint: Brand.accent) }
             if e.toneMapToSDR { Chip(text: "HDR → SDR", systemImage: "sun.max", tint: Brand.accent) }
             if e.denoise != .off { Chip(text: "Noise reduced", systemImage: "camera.filters", tint: Brand.accent) }
-            Spacer()
+          }
+            Spacer(minLength: 8)
             if let bars = item.source?.blackBars, e.crop == nil {
                 Button("Remove Black Bars") { item.settings.edits.crop = bars }
                     .controlSize(.small)

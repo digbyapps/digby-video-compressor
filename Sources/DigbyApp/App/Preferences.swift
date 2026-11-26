@@ -95,12 +95,24 @@ struct Preferences: Codable {
 
 /// The queue as it was, so a batch survives quitting, a crash or a restart.
 struct SavedQueue: Codable {
-    struct Entry: Codable { var url: URL; var settings: CompressionSettings; var pending: Bool }
+    struct Entry: Codable {
+        var url: URL; var settings: CompressionSettings; var pending: Bool
+        // Added 2026-11 (absent in older files): how it ended, for the reopen summary.
+        var outcome: LastSessionOutcome?
+        var note: String?
+        var wasRunning: Bool?
+        /// Sent by Digby Video Downloader: its setting name, so a resumed job still reports back.
+        var handoffSetting: String?
+        var replaceOriginal: Bool?
+        /// Set when loaded (not meaningful on disk): identifies the row in the summary.
+        var key: String?
+    }
     var entries: [Entry]
     var outputMode: Preferences.OutputMode
 
     static var fileURL: URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let support = ProcessInfo.processInfo.environment["DIGBY_SUPPORT_DIR"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let dir = support.appendingPathComponent("Digby Video Compressor")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("Queue.json")

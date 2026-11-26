@@ -171,6 +171,48 @@ struct SectionLabel: View {
     }
 }
 
+/// Lays children out left to right and starts a new line when the width runs out (chips, pills, small controls).
+/// Children keep their natural size, so nothing is squashed, truncated mid-word or clipped.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 8
+    var topAligned = false
+
+    private struct Line { var items: [(Int, CGSize)] = []; var width: CGFloat = 0; var height: CGFloat = 0 }
+
+    private func lines(_ width: CGFloat, _ subviews: Subviews) -> [Line] {
+        var out = [Line()]
+        for (i, v) in subviews.enumerated() {
+            var s = v.sizeThatFits(.unspecified)
+            if s.width > width { s = v.sizeThatFits(ProposedViewSize(width: width, height: nil)); s.width = min(s.width, width) }
+            if !out[out.count - 1].items.isEmpty && out[out.count - 1].width + spacing + s.width > width { out.append(Line()) }
+            let n = out.count - 1
+            out[n].width += (out[n].items.isEmpty ? 0 : spacing) + s.width
+            out[n].height = max(out[n].height, s.height)
+            out[n].items.append((i, s))
+        }
+        return out.filter { !$0.items.isEmpty }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let ls = lines(proposal.width ?? .infinity, subviews)
+        let h = ls.reduce(0) { $0 + $1.height } + lineSpacing * CGFloat(max(0, ls.count - 1))
+        return CGSize(width: ls.map(\.width).max() ?? 0, height: h)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for line in lines(bounds.width, subviews) {
+            var x = bounds.minX
+            for (i, s) in line.items {
+                subviews[i].place(at: CGPoint(x: x, y: y + (topAligned ? 0 : (line.height - s.height) / 2)), proposal: ProposedViewSize(s))
+                x += s.width + spacing
+            }
+            y += line.height + lineSpacing
+        }
+    }
+}
+
 struct Chip: View {
     var text: String
     var systemImage: String? = nil
@@ -178,8 +220,9 @@ struct Chip: View {
     var body: some View {
         HStack(spacing: 4) {
             if let s = systemImage { Image(systemName: s).imageScale(.small) }
-            Text(text)
+            Text(text).lineLimit(1)
         }
+        .fixedSize()
         .font(.system(size: 11.5, weight: .medium))
         .padding(.horizontal, 8).padding(.vertical, 3.5)
         .foregroundStyle(tint == .secondary ? Brand.muted : tint)
@@ -215,8 +258,9 @@ struct PillButton: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 if let s = systemImage { Image(systemName: s).imageScale(.small) }
-                Text(title)
+                Text(title).lineLimit(1)
             }
+                .fixedSize()
                 .font(.system(size: 12.5, weight: selected ? .semibold : .medium))
                 .padding(.horizontal, 13).padding(.vertical, 6)
                 .foregroundStyle(selected ? Brand.onAccent : Color.primary)
@@ -276,7 +320,16 @@ extension Image {
     init(cgImage: CGImage) { self.init(decorative: cgImage, scale: 1) }
 }
 
-/// The empty-state and About panel: the icon's colours with the chevron motif.
+/// The app's own icon, as a quiet brand mark (home screen and About).
+struct AppIconMark: View {
+    var size: CGFloat
+    var body: some View {
+        Image(nsImage: NSApp.applicationIconImage).resizable().interpolation(.high)
+            .frame(width: size, height: size).accessibilityHidden(true)
+    }
+}
+
+/// Not used since the minimal redesign (2026-11): the old empty-state and About panel, sky colours with the chevron motif.
 struct SkyBand: View {
     var drift: Bool = false
     var settled: Bool = false

@@ -267,5 +267,43 @@ do {
     check(part < full / 4, "time estimate follows the trim (\(Int(part)) s vs \(Int(full)) s)")
 } catch { check(false, "hardware candidate tests threw \(error)") }
 
+// ---- resume after quit: the reopen summary and leftovers of a killed run
+do {
+    let r = LastSessionReport(items: [
+        LastSessionItem(id: "0", name: "a.mp4", outcome: .finished),
+        LastSessionItem(id: "1", name: "b.mp4", outcome: .stopped, reason: "Was being compressed", canResume: true),
+        LastSessionItem(id: "2", name: "c.mp4", outcome: .stopped, canResume: false),
+        LastSessionItem(id: "3", name: "d.mp4", outcome: .failed, reason: "Disk full", canResume: true),
+        LastSessionItem(id: "4", name: "e.mp4", outcome: .cancelled)], noun: "video")
+    check(r.headline == "Digby closed before 2 videos were done.", "summary headline counts stopped videos (\(r.headline))")
+    check(r.tally == "1 finished · 2 stopped · 1 failed · 1 cancelled", "summary tally (\(r.tally))")
+    check(r.resumable.map(\.id) == ["1"], "Resume All takes only stopped videos that are still there")
+    let failedOnly = LastSessionReport(items: [LastSessionItem(id: "0", name: "x", outcome: .failed)], noun: "video")
+    check(failedOnly.worthShowing && failedOnly.headline == "1 video didn’t finish last time.", "a failure alone is still reported")
+    let calm = LastSessionReport(items: [LastSessionItem(id: "0", name: "x", outcome: .finished), LastSessionItem(id: "1", name: "y", outcome: .cancelled)], noun: "video")
+    check(!calm.worthShowing && calm.tally == "1 finished · 1 cancelled", "nothing left undone: no summary")
+
+    check(Leftovers.isPartial(".holiday.digby-partial-ab12cd.mp4") && !Leftovers.isPartial("holiday.mp4") && !Leftovers.isPartial(".DS_Store"), "partial outputs recognised")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("digby-leftovers-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let old = dir.appendingPathComponent(".a.digby-partial-111111.mp4"), fresh = dir.appendingPathComponent(".b.digby-partial-222222.mp4")
+    let keep = dir.appendingPathComponent("a.mp4")
+    for f in [old, fresh, keep] { try Data([1]).write(to: f) }
+    try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-600)], ofItemAtPath: old.path)
+    try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-600)], ofItemAtPath: keep.path)
+    check(Leftovers.sweepPartials(in: dir) == 1, "an abandoned partial is removed")
+    check(!FileManager.default.fileExists(atPath: old.path) && FileManager.default.fileExists(atPath: fresh.path) && FileManager.default.fileExists(atPath: keep.path),
+          "a partial still being written and finished videos are kept")
+
+    let ps = """
+      101     1 /Applications/Digby Video Compressor.app/Contents/Resources/ffmpeg
+      102   500 /Applications/Digby Video Compressor.app/Contents/Resources/ffmpeg
+      103     1 /opt/homebrew/bin/ffmpeg
+    """
+    check(Leftovers.orphanPIDs(psOutput: ps, executable: "/Applications/Digby Video Compressor.app/Contents/Resources/ffmpeg") == [101],
+          "only orphaned copies of the app's own encoder are stopped")
+} catch { check(false, "resume tests threw \(error)") }
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

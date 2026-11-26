@@ -63,6 +63,12 @@ final class QueueItem: Identifiable {
     /// Measured anchor for the size estimates in the settings panel.
     var estimate: EstimateState = .none
     @ObservationIgnored var estimateTask: Task<Void, Never>?
+    /// Sent by Digby Video Downloader: start as soon as it's inspected.
+    @ObservationIgnored var autoStart = false
+    /// Sent by Digby Video Downloader: replace this original (to the Trash) whatever the output setting.
+    var replaceOriginal = false
+    /// Sent by Digby Video Downloader: the setting it asked for, and results are written back for it.
+    @ObservationIgnored var handoffSetting: String?
 
     enum EstimateState {
         case none, running

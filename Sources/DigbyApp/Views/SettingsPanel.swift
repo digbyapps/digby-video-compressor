@@ -77,13 +77,12 @@ struct SettingsPanel: View {
                     Divider()
                     Row(title: "Format", systemImage: "film") {
                         let current = FormatChoice.of(item.settings, macDecodesAV1: mac)
-                        HStack(alignment: .top, spacing: 8) {
+                        FlowLayout(spacing: 8, lineSpacing: 8, topAligned: true) {
                             ForEach(FormatChoice.allCases) { f in
                                 OptionPill(title: f.label, selected: current == f,
                                            caption: item.estimate(for: item.settings.with { f.apply(to: &$0, macDecodesAV1: mac) }, engine: model.engine),
                                            original: media.fileSize) { f.apply(to: &item.settings, macDecodesAV1: mac) }
                             }
-                            Spacer(minLength: 0)
                             if plan?.previewableOnThisMac == false {
                                 Chip(text: "No Quick Look on this Mac", systemImage: "eye.slash", tint: Brand.warn)
                                     .help("Finder’s spacebar preview, QuickTime and Photos can’t play AV1 on this Mac (that needs an M3 or later). VLC, IINA, browsers and YouTube can.")
@@ -97,7 +96,7 @@ struct SettingsPanel: View {
                     Divider()
                     TextGuardRow(item: item, plan: plan)
                     Divider()
-                    HStack(alignment: .top, spacing: 26) {
+                    FlowLayout(spacing: 26, lineSpacing: 14, topAligned: true) {
                         Row(title: "Audio quality", systemImage: "waveform") {
                             Picker("Audio quality", selection: $item.settings.audio) {
                                 ForEach(AudioQuality.allCases) { Text($0.rawValue).tag($0) }
@@ -339,16 +338,17 @@ struct SizeGoalPicker: View {
                 }
                 ExplanationView(explanation: Explain.quality(level, synthetic: synthetic))
             case .targetSize(let bytes):
-                HStack(spacing: 6) {
+                FlowLayout(spacing: 6, lineSpacing: 8) {
                     ForEach(Destination.all) { d in
                         PillButton(title: d.name, systemImage: d.symbol, selected: bytes == d.bytes) { item.settings.goal = .targetSize(bytes: d.bytes) }
                             .help("\(Fmt.bytes(d.bytes)). \(d.note) (Checked \(Destination.checked).)")
                     }
-                    Divider().frame(height: 18)
+                    Rectangle().fill(Brand.line).frame(width: 1, height: 18)
                     ForEach(Destination.sizesMB, id: \.self) { mb in
                         PillButton(title: "\(mb) MB", selected: bytes == Int64(mb) * 1_000_000) { item.settings.goal = .targetSize(bytes: Int64(mb) * 1_000_000) }
                     }
-                    Divider().frame(height: 18)
+                    Rectangle().fill(Brand.line).frame(width: 1, height: 18)
+                    HStack(spacing: 6) {
                     TextField("Size", value: Binding(get: { Double(bytes) / (unitGB ? 1e9 : 1e6) },
                                                   set: { item.settings.goal = .targetSize(bytes: Int64(max(0.1, $0) * (unitGB ? 1e9 : 1e6))) }),
                               format: .number.precision(.fractionLength(0...2)))
@@ -356,6 +356,7 @@ struct SizeGoalPicker: View {
                         .accessibilityLabel("Maximum file size")
                     Picker("Unit", selection: $unitGB) { Text("MB").tag(false); Text("GB").tag(true) }
                         .labelsHidden().fixedSize()
+                    }
                 }
                 TargetHint(bytes: bytes, media: media)
                 Text("The file will never be larger than this: Digby checks the result and re-encodes if it’s over. Quality is the best that fits.")
@@ -436,8 +437,8 @@ struct SettingsSummaryLine: View {
         let mac = model.engine?.caps.systemDecodesAV1 ?? false
         let f = FormatChoice.of(item.settings, macDecodesAV1: mac)
         let est = item.estimate(for: item.settings, engine: model.engine)
-        HStack(spacing: 8) {
-            Text("You’ll get").foregroundStyle(.secondary)
+        FlowLayout(spacing: 8, lineSpacing: 6) {
+            Text("You’ll get").foregroundStyle(.secondary).fixedSize()
             Chip(text: f.title, systemImage: "film", tint: Brand.accent)
             if let p = plan { Chip(text: "\(p.outputSize.width) × \(p.outputSize.height)", systemImage: "rectangle.expand.vertical", tint: Brand.accent) }
             switch item.settings.goal {

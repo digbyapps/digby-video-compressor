@@ -81,13 +81,7 @@ struct Banners: View {
     @Environment(AppModel.self) private var model
     var body: some View {
         VStack(spacing: 0) {
-            if let offer = model.resumeOffer {
-                Banner(symbol: "arrow.clockwise.circle.fill", tint: Brand.accent,
-                       text: "\(offer.count) video\(offer.count == 1 ? " was" : "s were") still waiting to be compressed when Digby last closed.") {
-                    Button("Resume") { model.resumeSavedQueue() }.buttonStyle(.borderedProminent).tint(Brand.accent)
-                    Button("Dismiss") { model.dismissResume() }
-                }
-            }
+            if let report = model.lastSession { LastSessionSummary(report: report) }
             if let n = model.skipNotice {
                 Banner(symbol: "line.3.horizontal.decrease.circle.fill", tint: .secondary, text: n.summary) {
                     Button("Add Anyway") { model.addSkippedAnyway() }
@@ -110,6 +104,77 @@ struct Banners: View {
             .padding(.horizontal, 16).padding(.vertical, 9)
             .background(Brand.accent.opacity(0.06))
             .overlay(alignment: .bottom) { Divider() }
+        }
+    }
+}
+
+/// After reopening: what the last session finished, what closing stopped, what failed (and why), what was cancelled.
+struct LastSessionSummary: View {
+    @Environment(AppModel.self) private var model
+    var report: LastSessionReport
+    @State private var expanded = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.clockwise.circle").foregroundStyle(Brand.accent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(report.headline).font(.callout)
+                    Text(report.tally).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(expanded ? "Hide" : "Details") { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } }
+                    .buttonStyle(.borderless).controlSize(.small)
+                Button("Dismiss") { model.dismissResume() }.controlSize(.small)
+                    .help("Close this. Videos not resumed are forgotten (the originals are untouched).")
+                if !report.resumable.isEmpty {
+                    Button("Resume All") { model.resumeSavedQueue() }.buttonStyle(.borderedProminent).tint(Brand.accent).controlSize(.small)
+                }
+            }
+            if expanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(report.items) { row in Row(row: row) }
+                }
+                .padding(.leading, 26)
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 9)
+        .background(Brand.accent.opacity(0.06))
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    struct Row: View {
+        @Environment(AppModel.self) private var model
+        var row: LastSessionItem
+        var body: some View {
+            HStack(spacing: 8) {
+                Image(systemName: symbol).foregroundStyle(tint).frame(width: 14)
+                Text(row.name).lineLimit(1).truncationMode(.middle)
+                if let r = row.reason { Text(r).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail) }
+                Spacer(minLength: 8)
+                if row.canResume {
+                    Button(row.outcome == .failed ? "Try Again" : "Resume") { model.resumeSavedQueue([row.id]) }.buttonStyle(.borderless)
+                }
+                if row.outcome == .stopped || row.outcome == .failed {
+                    Button("Remove") { model.removeFromLastSession(row.id) }.buttonStyle(.borderless).foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
+        }
+        var symbol: String {
+            switch row.outcome {
+            case .finished: "checkmark.circle"
+            case .stopped: "pause.circle"
+            case .failed: "exclamationmark.circle"
+            case .cancelled: "xmark.circle"
+            }
+        }
+        var tint: Color {
+            switch row.outcome {
+            case .finished: .green
+            case .stopped: Brand.accent
+            case .failed: .orange
+            case .cancelled: .secondary
+            }
         }
     }
 }
