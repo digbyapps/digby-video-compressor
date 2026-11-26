@@ -9,15 +9,11 @@ Everything happens on your Mac. Nothing is uploaded, and your original file is n
 
 ## Install
 
-**[Download Digby Video Compressor](https://github.com/digbyapps/digby-video-compressor/releases/latest/download/Digby-Video-Compressor.dmg)** (free, 22 MB) · [Website](https://digbyapps.github.io/compressor/) · [All releases](https://github.com/digbyapps/digby-video-compressor/releases)
+Digby Video Compressor is free and open source (MIT); the source code is in this repository.
+Get the latest version from the **[Releases page](https://github.com/digbyapps/digby-video-compressor/releases)**
+(about 22 MB). See also the [website](https://digbyapps.github.io/compressor/).
 
-1. Open the downloaded `Digby-Video-Compressor.dmg` and drag **Digby Video Compressor** to **Applications**.
-2. The first time you open it, macOS may say it "can't be opened" or comes from an "unidentified developer".
-   This happens because the app is signed locally rather than notarised by Apple. Either:
-   - right-click the app → **Open** → **Open**, or
-   - System Settings → Privacy & Security → scroll down → **Open Anyway**.
-
-   You only need to do this once.
+Open the disk image from the release and drag **Digby Video Compressor** to **Applications**.
 
 Requirements: a Mac with Apple Silicon (M1 or later) running macOS 26 or later.
 Everything else, including the encoders, is inside the app. You don't need Homebrew, Xcode or the command line.
@@ -228,8 +224,8 @@ replace the originals (originals to the Trash) as the app does.
 - **Apple Silicon and macOS 26+ only.** The bundled FFmpeg libraries come from Homebrew bottles built for
   this macOS. Supporting older macOS needs FFmpeg built with an older deployment target (the build script
   accepts any FFmpeg via `FFMPEG_DIR`).
-- **Not notarised**, so first launch needs right-click → Open (see Install). Notarisation needs a paid Apple
-  Developer ID.
+- **Not notarised** yet (that needs a paid Apple Developer ID), so macOS asks for confirmation the first time you
+  open it. The release notes explain the one-time step.
 - **AV1 playback on M1/M2**: Finder's preview, QuickTime and Photos can't play AV1 on these chips (Apple has no
   software AV1 decoder). That's why *HEVC · Previews in Finder* is the default format there; results that won't preview
   are labelled.
@@ -247,9 +243,6 @@ replace the originals (originals to the Trash) as the app does.
   conversion with a simple highlight roll-off, not a scene-adaptive tone map.
 - **Quality ratings** compare the result with the original *at the output size*. When you lower the resolution,
   the result card says so: the rating doesn't count the detail given up by making the picture smaller.
-- **Licensing**: the bundled FFmpeg includes x264 and x265, which makes it GPL software. Giving the app away is
-  fine as long as the corresponding FFmpeg source is offered alongside it (a link on the download page is enough).
-  See `Contents/Resources/Licenses/THIRD_PARTY_NOTICES.txt`.
 
 ## More
 
@@ -257,3 +250,12 @@ replace the originals (originals to the Trash) as the app does.
 - `Docs/ENCODING.md`: benchmark results on this M1 and the encoder decisions they led to
 - `Docs/YOUTUBE_BENCHMARK.md`: how to compare against YouTube's processing
 - `Tests/integration/REPORT.md`: latest end-to-end test results
+
+## Licence and third-party software
+
+Digby Video Compressor is MIT licensed ([LICENSE](LICENSE)), © 2026 Digby.
+
+The app bundles [FFmpeg](https://ffmpeg.org) and its libraries (SVT-AV1, x265, x264, libvmaf, Opus and others).
+Because it includes x264 and x265, the bundled FFmpeg build is licensed under the GPL. Each release links to the
+corresponding FFmpeg source, and the full notices ship inside the app at
+`Contents/Resources/Licenses/THIRD_PARTY_NOTICES.txt`.
