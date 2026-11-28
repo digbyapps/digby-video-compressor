@@ -10,8 +10,8 @@ Everything happens on your Mac. Nothing is uploaded, and your original file is n
 ## Install
 
 Digby Video Compressor is free and open source (MIT); the source code is in this repository.
-Get the latest version from the **[Releases page](https://github.com/drwojakmd/digby-video-compressor/releases)**
-(about 22 MB). See also the [website](https://drwojakmd.github.io/compressor/).
+Get the latest version from the **[Releases page](https://github.com/digbyapps/digby-video-compressor/releases)**
+(about 22 MB). See also the [website](https://digbyapps.github.io/compressor/).
 
 Open the disk image from the release and drag **Digby Video Compressor** to **Applications**.
 
